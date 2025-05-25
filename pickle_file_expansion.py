@@ -34,7 +34,7 @@ def create_bpac_dff_histogram(bpac_dff, output_dir):
              bbox=props)
     
     plt.grid(True, alpha=0.3)
-    plt.tight_layout()
+    plt.tight_layout()  
     
     # Save the histogram
     output_path = os.path.join(output_dir, 'bPAC_dFF_values.png')
@@ -60,11 +60,19 @@ def process_traces(traces, trace_length):
     
     # Process each trace
     for i, trace in enumerate(traces):
-        # Normalize trace
-        trace_norm = trace / np.mean(trace)
+        # Normalize trace to [0,1]
+        trace_min = np.min(trace)
+        trace_max = np.max(trace)
+        if trace_max == trace_min:  # Handle constant traces
+            trace_norm = np.zeros_like(trace)
+        else:
+            trace_norm = (trace - trace_min) / (trace_max - trace_min)
         
-        # Z-score the trace
-        trace_z = (trace_norm - np.mean(trace_norm)) / np.std(trace_norm)
+        # Z-score the normalized trace
+        if np.std(trace_norm) == 0:  # Handle constant traces
+            trace_z = np.zeros_like(trace_norm)
+        else:
+            trace_z = (trace_norm - np.mean(trace_norm)) / np.std(trace_norm)
         
         # Calculate bPAC_stim (mean of stimulation period)
         bpac_stim[i] = np.mean(trace_z[stim_range[0]:stim_range[1]])
@@ -92,11 +100,51 @@ def process_pickle_file(file_path):
         with open(file_path, 'rb') as f:
             data = pickle.load(f)
         
+        # Check for required keys (excluding rastermap_indices as it's now in a different file)
+        required_keys = ['roi_indices', 'traces']
+        missing_keys = [key for key in required_keys if key not in data]
+        if missing_keys:
+            raise KeyError(f"Missing required keys in input file: {missing_keys}")
+        
+        # Construct path to rastermap_model.npy
+        data_dir = os.path.dirname(file_path)
+        rastermap_path = os.path.join(data_dir, 'suite2p', 'plane0', 'rastermap_model.npy')
+        
+        if not os.path.exists(rastermap_path):
+            raise FileNotFoundError(f"Rastermap file not found at: {rastermap_path}")
+        
+        # Load rastermap indices
+        rastermap_data = np.load(rastermap_path, allow_pickle=True).item()
+        if 'isort' not in rastermap_data:
+            raise KeyError("'isort' key not found in rastermap_model.npy")
+        
+        rastermap_indices = rastermap_data['isort']
+        
         # Extract traces and calculate trace length
         traces = data['traces']
         trace_length = len(traces[0])
         
-        # Process traces
+        # Calculate normalized traces [0,1] and z-scored traces
+        traces_norm = []
+        traces_Zscr = []
+        for trace in traces:
+            # Normalize to [0,1]
+            trace_min = np.min(trace)
+            trace_max = np.max(trace)
+            if trace_max == trace_min:  # Handle constant traces
+                trace_norm = np.zeros_like(trace)
+            else:
+                trace_norm = (trace - trace_min) / (trace_max - trace_min)
+            traces_norm.append(trace_norm)
+            
+            # Z-score the normalized trace
+            if np.std(trace_norm) == 0:  # Handle constant traces
+                trace_z = np.zeros_like(trace_norm)
+            else:
+                trace_z = (trace_norm - np.mean(trace_norm)) / np.std(trace_norm)
+            traces_Zscr.append(trace_z)
+        
+        # Process traces for bPAC calculations
         bpac_stim, bpac_dff = process_traces(traces, trace_length)
         
         # Create output directory (same as input file directory)
@@ -105,16 +153,57 @@ def process_pickle_file(file_path):
         # Create histogram
         create_bpac_dff_histogram(bpac_dff, output_dir)
         
-        # Save processed data
-        output_data = {
-            'traces': traces,
-            'bpac_stim': bpac_stim,
-            'bpac_dff': bpac_dff
-        }
+        # Debug: Print shapes of all arrays before creating DataFrame
+        print("\nDebug: Array shapes before DataFrame creation:")
+        print(f"roi_indices shape: {data['roi_indices'].shape}")
+        print(f"Number of traces: {len(traces)}")
+        print(f"Length of each trace: {len(traces[0])}")
+        print(f"rastermap_indices shape: {rastermap_indices.shape}")
+        print(f"Number of normalized traces: {len(traces_norm)}")
+        print(f"Number of Z-scored traces: {len(traces_Zscr)}")
+        print(f"bpac_stim shape: {bpac_stim.shape}")
+        print(f"bpac_dff shape: {bpac_dff.shape}")
         
+        # Create DataFrame with all required columns
+        try:
+            output_df = pd.DataFrame({
+                'roi_indices': data['roi_indices'],
+                'traces': list(traces),  # Convert to list of arrays
+                'rastermap_indices': rastermap_indices,
+                'traces_norm': traces_norm,  # Already a list of arrays
+                'traces_Zscr': traces_Zscr,  # Already a list of arrays
+                'bPAC_stim': bpac_stim,
+                'bPAC_dFF': bpac_dff
+            })
+        except ValueError as e:
+            print("\nError creating DataFrame:")
+            print(f"Error message: {str(e)}")
+            print("\nChecking each column individually:")
+            for col_name, col_data in [
+                ('roi_indices', data['roi_indices']),
+                ('traces', list(traces)),
+                ('rastermap_indices', rastermap_indices),
+                ('traces_norm', traces_norm),
+                ('traces_Zscr', traces_Zscr),
+                ('bPAC_stim', bpac_stim),
+                ('bPAC_dFF', bpac_dff)
+            ]:
+                print(f"\n{col_name}:")
+                print(f"Type: {type(col_data)}")
+                if isinstance(col_data, list):
+                    print(f"Length: {len(col_data)}")
+                    if len(col_data) > 0:
+                        print(f"First element type: {type(col_data[0])}")
+                        if hasattr(col_data[0], 'shape'):
+                            print(f"First element shape: {col_data[0].shape}")
+                else:
+                    print(f"Shape: {getattr(col_data, 'shape', 'No shape attribute')}")
+                    print(f"Dimensions: {getattr(col_data, 'ndim', 'No ndim attribute')}")
+            raise
+        
+        # Save processed data as DataFrame
         output_path = os.path.join(output_dir, 'processed_traces.pkl')
-        with open(output_path, 'wb') as f:
-            pickle.dump(output_data, f)
+        output_df.to_pickle(output_path)
         
         print(f"Successfully processed: {file_path}")
         return True
@@ -127,26 +216,20 @@ def main():
     import sys
     
     if len(sys.argv) != 2:
-        print("Usage: python pickle_file_expansion.py <directory_path>")
+        print("Usage: python pickle_file_expansion.py <file_path>")
         sys.exit(1)
     
-    directory = sys.argv[1]
-    print(f"Starting processing in directory: {directory}")
-    
-    success_count = 0
-    error_count = 0
-    
-    # Walk through directory
-    for root, dirs, files in os.walk(directory):
-        for file in files:
-            if file == 'selected_traces.pkl':
-                file_path = os.path.join(root, file)
-                if process_pickle_file(file_path):
-                    success_count += 1
-                else:
-                    error_count += 1
-    
-    print(f"Processing completed. Successfully processed: {success_count}, Errors: {error_count}")
+    file_path = sys.argv[1]
+    if not os.path.exists(file_path):
+        print(f"File not found: {file_path}")
+        sys.exit(1)
+        
+    print(f"Processing file: {file_path}")
+    if process_pickle_file(file_path):
+        print("Processing completed successfully")
+    else:
+        print("Processing failed")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main() 
