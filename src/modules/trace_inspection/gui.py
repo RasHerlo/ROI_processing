@@ -13,8 +13,8 @@ class TraceInspectionGUI(QWidget):
         super().__init__()
         self.module = module
         self.current_trace_idx = 0
-        # Store sorted indices for navigation
-        self.sorted_idx = np.argsort(self.module.processed_data['rastermap_indices'])
+        # Use rastermap_indices directly for sorting
+        self.sorted_idx = self.module.processed_data['rastermap_indices']
         self.setup_ui()
         
     def setup_ui(self):
