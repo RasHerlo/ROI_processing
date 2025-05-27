@@ -1,4 +1,5 @@
 import os
+import numpy as np
 import pandas as pd
 from PyQt5.QtWidgets import QMessageBox
 from ..base_module import BaseModule
@@ -10,6 +11,8 @@ class TraceInspectionModule(BaseModule):
     def __init__(self, channel: str, data_folder: str = "./DATA"):
         super().__init__(channel, data_folder)
         self.processed_data = None
+        self.ops = None
+        self.stat = None
     
     def process(self) -> bool:
         """
@@ -48,6 +51,16 @@ class TraceInspectionModule(BaseModule):
         if os.path.exists(processed_path):
             try:
                 self.processed_data = pd.read_pickle(processed_path)
+                
+                # Load additional data needed for ROI visualization
+                suite2p_path = os.path.join(self.data_path, 'suite2p', 'plane0')
+                ops_path = os.path.join(suite2p_path, 'ops.npy')
+                stat_path = os.path.join(suite2p_path, 'stat.npy')
+                
+                # Load ops and stat files
+                self.ops = np.load(ops_path, allow_pickle=True).item()
+                self.stat = np.load(stat_path, allow_pickle=True)
+                
                 return True
             except Exception as e:
                 QMessageBox.critical(None, "Error", f"Failed to load processed data: {str(e)}")
