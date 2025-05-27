@@ -92,10 +92,10 @@ class TraceInspectionGUI(QWidget):
         self.trace_ax.add_patch(rect)
         
         # Set title with indices and bPAC_dFF value
-        raster_idx = self.module.processed_data['rastermap_indices'].iloc[original_idx]
+        rasmap_num = self.module.processed_data['rasmap_nums'].iloc[original_idx]
         roi_idx = self.module.processed_data['roi_indices'].iloc[original_idx]
         bpac_dff = self.module.processed_data['bPAC_dFF'].iloc[original_idx]
-        self.trace_ax.set_title(f'Rastermap Index: {raster_idx}, ROI Index: {roi_idx}, bPAC_dFF: {bpac_dff:.4f}')
+        self.trace_ax.set_title(f'Rastermap Position: {rasmap_num}, ROI Index: {roi_idx}, bPAC_dFF: {bpac_dff:.4f}')
         
         self.canvas.draw()
         

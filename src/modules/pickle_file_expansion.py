@@ -81,6 +81,11 @@ def process_pickle_file(input_file):
     
     rastermap_indices = rastermap_data['isort']
     
+    # Compute rasmap_nums (position in sorted rasterplot)
+    rasmap_nums = np.zeros_like(rastermap_indices)
+    for i, idx in enumerate(rastermap_indices):
+        rasmap_nums[idx] = i
+    
     # Get the traces and their length
     traces = data['traces']
     trace_length = len(traces[0])
@@ -117,6 +122,7 @@ def process_pickle_file(input_file):
     df = pd.DataFrame({
         'roi_indices': data['roi_indices'],
         'rastermap_indices': rastermap_indices,
+        'rasmap_nums': rasmap_nums,
         'traces': list(traces_with_nans),  # Store traces_with_nans
         'traces_norm': list(normalized_traces),
         'z_scored_traces': list(z_scored_traces),
