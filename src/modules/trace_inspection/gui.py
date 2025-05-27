@@ -7,6 +7,7 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib.patches as patches
 import matplotlib.colors as mcolors
+from scipy.ndimage import binary_dilation
 
 class TraceInspectionGUI(QWidget):
     """GUI for trace inspection module."""
@@ -21,17 +22,38 @@ class TraceInspectionGUI(QWidget):
         
         # ROI visualization settings
         self.show_mean_img = True  # Toggle between meanImg and meanImgE
-        self.roi_colors = None  # Will store random colors for ROIs
-        self.generate_roi_colors()  # Generate random colors for ROIs
+        self.color_by_bpac = False  # Toggle between random colors and bPAC_dFF colors
+        self.roi_colors = None  # Will store ROI colors
+        self.generate_roi_colors()  # Generate initial random colors
         
         self.setup_ui()
     
     def generate_roi_colors(self):
-        """Generate random colors for ROIs."""
+        """Generate colors for ROIs based on current mode."""
         n_rois = len(self.module.processed_data)
-        # Generate random colors with 50% transparency
-        self.roi_colors = np.random.rand(n_rois, 4)
-        self.roi_colors[:, 3] = 0.5  # Set alpha to 0.5
+        
+        if self.color_by_bpac:
+            # Get bPAC_dFF values
+            bpac_values = self.module.processed_data['bPAC_dFF'].to_numpy()
+            # Create normalized values for colormapping (ignoring nans)
+            valid_vals = bpac_values[~np.isnan(bpac_values)]
+            vmin, vmax = np.min(valid_vals), np.max(valid_vals)
+            norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
+            # Create colormap
+            cmap = plt.cm.bwr
+            # Generate colors with 80% transparency
+            self.roi_colors = np.zeros((n_rois, 4))
+            for i, val in enumerate(bpac_values):
+                if np.isnan(val):
+                    self.roi_colors[i] = [0.5, 0.5, 0.5, 0.2]  # Gray for nan values
+                else:
+                    color = list(cmap(norm(val)))
+                    color[3] = 0.2  # 80% transparency
+                    self.roi_colors[i] = color
+        else:
+            # Generate random colors with 80% transparency
+            self.roi_colors = np.random.rand(n_rois, 4)
+            self.roi_colors[:, 3] = 0.2  # Set alpha to 0.2 (80% transparent)
         
     def setup_ui(self):
         """Set up the user interface."""
@@ -77,16 +99,23 @@ class TraceInspectionGUI(QWidget):
         # Right controls (new)
         right_controls = QVBoxLayout()
         
-        # Add BG-IMAGE label
+        # Add BG-IMAGE label and toggle
         bg_label = QLabel("BG-IMAGE")
         bg_label.setAlignment(Qt.AlignCenter)
-        
-        # Add background toggle button
         self.bg_toggle = QPushButton("Switch to MeanImgE" if self.show_mean_img else "Switch to MeanImg")
         self.bg_toggle.clicked.connect(self.toggle_background)
         
+        # Add ROI-COLOR label and toggle
+        color_label = QLabel("ROI-COLOR")
+        color_label.setAlignment(Qt.AlignCenter)
+        self.color_toggle = QPushButton("Color by bPAC_dFF")
+        self.color_toggle.setCheckable(True)
+        self.color_toggle.clicked.connect(self.toggle_roi_color)
+        
         right_controls.addWidget(bg_label)
         right_controls.addWidget(self.bg_toggle)
+        right_controls.addWidget(color_label)
+        right_controls.addWidget(self.color_toggle)
         
         # Add controls to main controls layout
         controls_layout.addLayout(left_controls)
@@ -126,11 +155,26 @@ class TraceInspectionGUI(QWidget):
             roi_stat = self.module.stat[roi_idx]
             xpix, ypix = roi_stat['xpix'], roi_stat['ypix']
             
-            # Use white for selected ROI, random color for others
-            color = np.array([1, 1, 1, 1]) if roi_idx == current_roi_idx else self.roi_colors[i]
-            
-            # Plot ROI pixels
-            self.roi_ax.scatter(xpix, ypix, c=[color], s=1)
+            if roi_idx == current_roi_idx:
+                # Selected ROI: white fill
+                self.roi_ax.scatter(xpix, ypix, c='white', s=1)
+                
+                # Create outline by finding boundary pixels
+                # Create a mask of the ROI
+                mask = np.zeros_like(bg_img, dtype=bool)
+                mask[ypix, xpix] = True
+                
+                # Find boundary pixels using binary dilation
+                dilated = binary_dilation(mask)
+                boundary = dilated & ~mask
+                
+                # Get boundary coordinates
+                boundary_y, boundary_x = np.where(boundary)
+                # Plot boundary in red
+                self.roi_ax.scatter(boundary_x, boundary_y, c='red', s=1)
+            else:
+                # Other ROIs: random color with high transparency
+                self.roi_ax.scatter(xpix, ypix, c=[self.roi_colors[i]], s=1)
         
         # Set title with ROI info
         current_stat = self.module.stat[current_roi_idx]
@@ -218,4 +262,11 @@ class TraceInspectionGUI(QWidget):
         """Toggle between rastermap and bPAC_dFF sorting."""
         self.sort_by_bpac = self.sort_toggle.isChecked()
         self.sort_toggle.setText("Sort by Rastermap" if self.sort_by_bpac else "Sort by bPAC_dFF")
-        self.update_plots() 
+        self.update_plots()
+        
+    def toggle_roi_color(self):
+        """Toggle between random colors and bPAC_dFF-based colors for ROIs."""
+        self.color_by_bpac = self.color_toggle.isChecked()
+        self.color_toggle.setText("Use Random Colors" if self.color_by_bpac else "Color by bPAC_dFF")
+        self.generate_roi_colors()
+        self.update_roi_plot() 
