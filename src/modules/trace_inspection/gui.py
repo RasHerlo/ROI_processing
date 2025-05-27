@@ -13,6 +13,7 @@ class TraceInspectionGUI(QWidget):
         super().__init__()
         self.module = module
         self.current_trace_idx = 0
+        self.sort_by_bpac = False  # Track sorting method
         # Use rastermap_indices directly for sorting
         self.sorted_idx = self.module.processed_data['rastermap_indices']
         self.setup_ui()
@@ -44,9 +45,15 @@ class TraceInspectionGUI(QWidget):
         up_btn.clicked.connect(self.move_up)
         down_btn.clicked.connect(self.move_down)
         
+        # Add sorting toggle button
+        self.sort_toggle = QPushButton("Sort by bPAC_dFF")
+        self.sort_toggle.setCheckable(True)
+        self.sort_toggle.clicked.connect(self.toggle_sorting)
+        
         controls_layout.addWidget(self.slider)
         controls_layout.addWidget(up_btn)
         controls_layout.addWidget(down_btn)
+        controls_layout.addWidget(self.sort_toggle)
         
         # Add widgets to layout
         layout.addWidget(self.canvas)
@@ -57,25 +64,43 @@ class TraceInspectionGUI(QWidget):
         # Initial plot
         self.update_plots()
         
+    def toggle_sorting(self):
+        """Toggle between rastermap and bPAC_dFF sorting."""
+        self.sort_by_bpac = self.sort_toggle.isChecked()
+        self.sort_toggle.setText("Sort by Rastermap" if self.sort_by_bpac else "Sort by bPAC_dFF")
+        self.update_plots()
+        
     def update_plots(self):
         """Update both the rasterplot and trace plot."""
         # Clear previous plots
         self.raster_ax.clear()
         self.trace_ax.clear()
         
-        # Get sorted traces
+        # Update sorting indices based on current mode
+        if self.sort_by_bpac:
+            # First get positions where each trace should go (highest bPAC_dFF at position 0)
+            pre_idc = self.module.processed_data['bPAC_dFF'].to_numpy().argsort()
+            self.sorted_idx = pre_idc[::-1]
+            print(self.sorted_idx)
+            cmap = 'bwr'  # Blue-white-red colormap for bPAC_dFF sorting
+        else:
+            # Use original rastermap sorting
+            self.sorted_idx = self.module.processed_data['rastermap_indices']
+            cmap = 'jet'  # Original jet colormap for rastermap sorting
+        
+        # Get sorted traces - for each position, get trace from sorted_idx
         traces_norm = self.module.processed_data['traces_norm'].iloc[self.sorted_idx]
         
         # Convert list of arrays to 2D array for visualization
         traces_norm_array = np.array([trace for trace in traces_norm])
         
-        # Plot rasterplot
-        self.raster_ax.imshow(traces_norm_array, aspect='auto', cmap='jet')
+        # Plot rasterplot with appropriate colormap
+        self.raster_ax.imshow(traces_norm_array, aspect='auto', cmap=cmap)
         
         # Highlight current trace
         self.raster_ax.axhline(y=self.current_trace_idx, color='red', linestyle='--', alpha=0.5)
         
-        # Plot selected trace (using original ROI index)
+        # Plot selected trace (using original index from sorted_idx)
         original_idx = self.sorted_idx[self.current_trace_idx]
         trace = self.module.processed_data['traces'].iloc[original_idx]
         self.trace_ax.plot(trace)
@@ -91,7 +116,7 @@ class TraceInspectionGUI(QWidget):
                            facecolor='red', alpha=0.5)
         self.trace_ax.add_patch(rect)
         
-        # Set title with indices and bPAC_dFF value
+        # Set title with indices and bPAC_dFF value - all from the same row using original_idx
         rasmap_num = self.module.processed_data['rasmap_nums'].iloc[original_idx]
         roi_idx = self.module.processed_data['roi_indices'].iloc[original_idx]
         bpac_dff = self.module.processed_data['bPAC_dFF'].iloc[original_idx]
