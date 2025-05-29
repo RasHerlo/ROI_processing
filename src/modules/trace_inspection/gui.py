@@ -290,12 +290,9 @@ class TraceInspectionGUI(QWidget):
         
     def update_roi_plot(self):
         """Update the ROI visualization plot."""
-        # Store the original position and size of the axis
-        orig_position = self.roi_ax.get_position()
-        
         self.roi_ax.clear()
         
-        # If there's an existing colorbar, remove it
+        # If there's an existing colorbar, remove it completely
         if self.current_colorbar is not None:
             self.current_colorbar.remove()
             self.current_colorbar = None
@@ -351,21 +348,24 @@ class TraceInspectionGUI(QWidget):
             sm = plt.cm.ScalarMappable(cmap=plt.cm.bwr, norm=norm)
             sm.set_array([])
             
-            # Create a divider for the existing axes instance
-            divider = make_axes_locatable(self.roi_ax)
+            # Get the position of the ROI axes
+            roi_pos = self.roi_ax.get_position()
             
-            # Add a new axes on the right of the current axes
-            # The width of cax will be 2% of roi_ax and the padding between roi_ax and cax will be 1%
-            cax = divider.append_axes("right", size="2%", pad=0.01)
+            # Create a manually positioned axes for the colorbar
+            # Position it to the right of the ROI plot with small gap
+            cbar_left = roi_pos.x1 + 0.01  # Small gap after ROI plot
+            cbar_bottom = roi_pos.y0
+            cbar_width = 0.015  # Narrow colorbar
+            cbar_height = roi_pos.height
+            
+            # Create colorbar axes using manual positioning
+            cbar_ax = self.fig.add_axes([cbar_left, cbar_bottom, cbar_width, cbar_height])
             
             # Add colorbar and store reference to it
-            self.current_colorbar = self.fig.colorbar(sm, cax=cax, label='bPAC_dFF')
+            self.current_colorbar = self.fig.colorbar(sm, cax=cbar_ax, label='bPAC_dFF')
             
             # Add reference line at 1.0
             self.current_colorbar.ax.axhline(y=1.0, color='black', linestyle='--', linewidth=0.5)
-        
-        # Restore the original position and size
-        self.roi_ax.set_position(orig_position)
         
         self.canvas.draw()
     
