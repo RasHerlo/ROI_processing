@@ -117,6 +117,8 @@ def process_pickle_file(input_file):
     
     # Process the traces to get additional metrics
     bpac_stim, poststim_80s, bpac_dff = process_traces(traces_with_nans, trace_length)
+    bpac_stim, poststim_80s, bpac_dff_norm = process_traces(normalized_traces, trace_length)
+    bpac_stim, poststim_80s, bpac_dff_zScr = process_traces(z_scored_traces, trace_length)
     
     # Create DataFrame with all the data
     df = pd.DataFrame({
@@ -128,7 +130,9 @@ def process_pickle_file(input_file):
         'z_scored_traces': list(z_scored_traces),
         'bpac_stim': bpac_stim,
         'poststim_80s': poststim_80s,
-        'bPAC_dFF': bpac_dff
+        'bPAC_dFF': bpac_dff,
+        'bPAC_dFF_norm': bpac_dff_norm,
+        'bPAC_dFF_zScr': bpac_dff_zScr
     })
     
     # Save the DataFrame to a pickle file

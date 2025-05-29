@@ -5,6 +5,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget,
                             QVBoxLayout, QHBoxLayout, QPushButton, QFileDialog, QLabel)
 from PyQt5.QtCore import Qt
 from modules.trace_inspection import TraceInspectionModule
+from modules.dataframe_inspection import DataFrameInspectionModule
 
 CONFIG_FILE = "config.json"
 
@@ -16,8 +17,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("ROI Processing")
         self.setGeometry(100, 100, 1200, 800)
         
-        # Store reference to trace inspection GUI
+        # Store references to GUI windows
         self.trace_inspection_gui = None
+        self.dataframe_inspection_gui = None
         
         # Load last used data folder from config, default to './DATA'
         self.data_folder = self.load_config().get("data_folder", "./DATA")
@@ -51,6 +53,11 @@ class MainWindow(QMainWindow):
         self.locate_data_btn = QPushButton("Locate DATA Folder")
         self.locate_data_btn.clicked.connect(self.locate_data_folder)
         layout.addWidget(self.locate_data_btn)
+        
+        # Add 'DataFrame Inspection' button
+        self.dataframe_inspect_btn = QPushButton("DataFrame Inspection")
+        self.dataframe_inspect_btn.clicked.connect(self.launch_dataframe_inspection)
+        layout.addWidget(self.dataframe_inspect_btn)
         
         # Add label to display current data folder
         self.data_folder_label = QLabel(f"Current DATA Folder: {self.data_folder}")
@@ -98,6 +105,13 @@ class MainWindow(QMainWindow):
         if module.process():
             self.trace_inspection_gui = module.create_gui()
             self.trace_inspection_gui.show()
+            
+    def launch_dataframe_inspection(self):
+        """Launch the DataFrame inspection module."""
+        module = DataFrameInspectionModule(self.current_channel, self.data_folder)
+        if module.process():
+            self.dataframe_inspection_gui = module.create_gui()
+            self.dataframe_inspection_gui.show()
 
 def main():
     app = QApplication(sys.argv)
