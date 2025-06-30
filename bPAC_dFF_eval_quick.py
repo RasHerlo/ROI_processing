@@ -411,6 +411,19 @@ def create_metrics_dataframe(output_path, total_count, mean_bpac, lower_limit,
     else:
         auc_high = np.nan
     
+    # Calculate ratio values with proper handling of division by zero and NaN
+    # Ratio of p-value counts (high/low)
+    if count_low > 0:
+        ratio_pval = count_high / count_low
+    else:
+        ratio_pval = np.inf if count_high > 0 else np.nan
+    
+    # Ratio of AUC values (high/low)
+    if not np.isnan(auc_low) and auc_low != 0:
+        ratio_auc = auc_high / auc_low
+    else:
+        ratio_auc = np.inf if not np.isnan(auc_high) and auc_high != 0 else np.nan
+    
     # Create metrics dataframe
     metrics_data = {
         'dir': [support_dir],
@@ -422,7 +435,9 @@ def create_metrics_dataframe(output_path, total_count, mean_bpac, lower_limit,
         'AUC low': [auc_low],
         'High p005 lim': [upper_limit],
         'Count High Trcs': [count_high],
-        'AUC high': [auc_high]
+        'AUC high': [auc_high],
+        'Ratio pval # a/b': [ratio_pval],
+        'Ratio AUC a/b': [ratio_auc]
     }
     
     metrics_df = pd.DataFrame(metrics_data)
@@ -441,6 +456,8 @@ def create_metrics_dataframe(output_path, total_count, mean_bpac, lower_limit,
     print(f"  AUC low: {auc_low:.4f}" if not np.isnan(auc_low) else "  AUC low: NaN")
     print(f"  High p<0.05 limit: {upper_limit:.4f} (n={count_high})")
     print(f"  AUC high: {auc_high:.4f}" if not np.isnan(auc_high) else "  AUC high: NaN")
+    print(f"  Ratio pval # a/b: {ratio_pval:.4f}" if not (np.isnan(ratio_pval) or np.isinf(ratio_pval)) else f"  Ratio pval # a/b: {ratio_pval}")
+    print(f"  Ratio AUC a/b: {ratio_auc:.4f}" if not (np.isnan(ratio_auc) or np.isinf(ratio_auc)) else f"  Ratio AUC a/b: {ratio_auc}")
 
 
 def process_file(file_path):
@@ -492,6 +509,88 @@ def process_file(file_path):
     create_visualization(filtered_data, ops, stat, output_path)
 
 
+def find_bpac_metrics_files(root_dir):
+    """
+    Walk through directories and find bPAC_metrics.pkl files.
+    
+    Args:
+        root_dir (str): Root directory to search
+        
+    Returns:
+        list: List of paths to bPAC_metrics.pkl files
+    """
+    metrics_files = []
+    
+    for root, dirs, files in os.walk(root_dir):
+        # Look for bPAC_metrics.pkl files
+        for file in files:
+            if file == 'bPAC_metrics.pkl':
+                metrics_files.append(os.path.join(root, file))
+    
+    return metrics_files
+
+
+def collect_bpac_metrics(root_dir):
+    """
+    Collect all bPAC_metrics.pkl files from subdirectories and combine them 
+    into a single bPAC_metrics_collect.pkl file in the root directory.
+    
+    Args:
+        root_dir (str): Root directory to search and save collect file
+    """
+    print(f"\nCollecting bPAC_metrics files from: {root_dir}")
+    
+    # Find all bPAC_metrics.pkl files
+    metrics_files = find_bpac_metrics_files(root_dir)
+    
+    if not metrics_files:
+        print("No bPAC_metrics.pkl files found for collection")
+        return
+    
+    print(f"Found {len(metrics_files)} bPAC_metrics.pkl files to collect")
+    
+    # Load and combine all metrics dataframes
+    all_metrics = []
+    
+    for metrics_path in metrics_files:
+        try:
+            print(f"  Loading: {metrics_path}")
+            metrics_df = pd.read_pickle(metrics_path)
+            all_metrics.append(metrics_df)
+        except Exception as e:
+            print(f"  ERROR: Failed to load {metrics_path}: {str(e)}")
+            continue
+    
+    if not all_metrics:
+        print("No valid bPAC_metrics.pkl files could be loaded")
+        return
+    
+    # Concatenate all dataframes
+    try:
+        collected_df = pd.concat(all_metrics, ignore_index=True)
+        
+        # Save the collected dataframe
+        collect_path = os.path.join(root_dir, 'bPAC_metrics_collect.pkl')
+        collected_df.to_pickle(collect_path)
+        
+        print(f"\nCollection complete!")
+        print(f"  Combined {len(all_metrics)} metrics files")
+        print(f"  Total rows in collection: {len(collected_df)}")
+        print(f"  Saved to: {collect_path}")
+        
+        # Display summary of collected data
+        print(f"\nCollection summary:")
+        if 'Celltype' in collected_df.columns:
+            celltype_counts = collected_df['Celltype'].value_counts()
+            for celltype, count in celltype_counts.items():
+                print(f"  {celltype}: {count} entries")
+        
+        print(f"  Total cells across all entries: {collected_df['Tot_Counts'].sum()}")
+        
+    except Exception as e:
+        print(f"ERROR: Failed to concatenate or save collected metrics: {str(e)}")
+
+
 def main():
     """Main function."""
     parser = argparse.ArgumentParser(description='Evaluate bPAC_dFF values across directories')
@@ -519,6 +618,9 @@ def main():
         process_file(file_path)
     
     print("\nProcessing complete!")
+    
+    # Collect all bPAC_metrics files into a single collection file
+    collect_bpac_metrics(args.directory)
 
 
 if __name__ == "__main__":
