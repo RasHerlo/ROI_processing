@@ -76,6 +76,28 @@ def load_data(file_path):
         ops = np.load(ops_path, allow_pickle=True).item()
         stat = np.load(stat_path, allow_pickle=True)
         
+        # Check if MeanImg or MeanImgE are missing and try to load from suite2p_registered
+        if 'meanImg' not in ops or 'meanImgE' not in ops:
+            try:
+                suite2p_registered_path = os.path.join(data_dir, 'suite2p_registered', 'plane0')
+                ops_registered_path = os.path.join(suite2p_registered_path, 'ops.npy')
+                
+                if os.path.exists(ops_registered_path):
+                    ops_registered = np.load(ops_registered_path, allow_pickle=True).item()
+                    
+                    # Add missing images from the registered ops
+                    if 'meanImg' not in ops and 'meanImg' in ops_registered:
+                        ops['meanImg'] = ops_registered['meanImg']
+                        print(f"Loaded meanImg from suite2p_registered folder")
+                    
+                    if 'meanImgE' not in ops and 'meanImgE' in ops_registered:
+                        ops['meanImgE'] = ops_registered['meanImgE']
+                        print(f"Loaded meanImgE from suite2p_registered folder")
+                else:
+                    print("Warning: suite2p_registered/plane0/ops.npy not found")
+            except Exception as e:
+                print(f"Warning: Failed to load from suite2p_registered: {str(e)}")
+        
         return processed_data, ops, stat
         
     except Exception as e:
