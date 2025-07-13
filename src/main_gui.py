@@ -6,6 +6,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget,
 from PyQt5.QtCore import Qt
 from modules.trace_inspection import TraceInspectionModule
 from modules.dataframe_inspection import DataFrameInspectionModule
+from modules.trace_selection import TraceSelectionModule
 
 CONFIG_FILE = "config.json"
 
@@ -20,6 +21,7 @@ class MainWindow(QMainWindow):
         # Store references to GUI windows
         self.trace_inspection_gui = None
         self.dataframe_inspection_gui = None
+        self.trace_selection_gui = None
         
         # Load last used data folder from config, default to './DATA'
         self.data_folder = self.load_config().get("data_folder", "./DATA")
@@ -48,6 +50,11 @@ class MainWindow(QMainWindow):
         self.trace_inspect_btn = QPushButton("Trace Inspect")
         self.trace_inspect_btn.clicked.connect(self.launch_trace_inspection)
         layout.addWidget(self.trace_inspect_btn)
+        
+        # Add 'Trace Selection' button
+        self.trace_selection_btn = QPushButton("Trace Selection")
+        self.trace_selection_btn.clicked.connect(self.launch_trace_selection)
+        layout.addWidget(self.trace_selection_btn)
         
         # Add 'Locate DATA Folder' button
         self.locate_data_btn = QPushButton("Locate DATA Folder")
@@ -105,6 +112,13 @@ class MainWindow(QMainWindow):
         if module.process():
             self.trace_inspection_gui = module.create_gui()
             self.trace_inspection_gui.show()
+            
+    def launch_trace_selection(self):
+        """Launch the trace selection module."""
+        module = TraceSelectionModule(self.current_channel, self.data_folder)
+        if module.process():
+            self.trace_selection_gui = module.create_gui()
+            self.trace_selection_gui.show()
             
     def launch_dataframe_inspection(self):
         """Launch the DataFrame inspection module."""
