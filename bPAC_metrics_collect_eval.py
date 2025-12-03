@@ -34,7 +34,7 @@ class bPACMetricsEvaluator:
         self.file_path = None  # Store file path for saving
         
         # Checkbox columns and their states
-        self.checkbox_columns = ['Derippling', 'Segmentation', 'HQ Exp', 'bPAC pos', 'TBD', 'To fix']
+        self.checkbox_columns = ['Export', 'Derippling', 'Segmentation', 'HQ Exp', 'bPAC pos', 'TBD', 'To fix']
         self.checkbox_symbols = {0: '☐', 1: '⊡', 2: '☑'}  # Empty, Maybe, Good
         self.column_filters = {col: False for col in self.checkbox_columns}  # Filter states
         
@@ -133,6 +133,30 @@ class bPACMetricsEvaluator:
                                font=('Arial', 12, 'bold'))
         title_label.pack(pady=(0, 10))
         
+        # Export panel
+        export_frame = ttk.Frame(self.right_frame)
+        export_frame.pack(fill=tk.X, padx=5, pady=(0, 10))
+        
+        # Directory row
+        dir_row = ttk.Frame(export_frame)
+        dir_row.pack(fill=tk.X, pady=2)
+        
+        ttk.Label(dir_row, text="Directory:", width=10).pack(side=tk.LEFT)
+        self.export_dir_var = tk.StringVar()
+        self.export_dir_entry = ttk.Entry(dir_row, textvariable=self.export_dir_var)
+        self.export_dir_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 5))
+        ttk.Button(dir_row, text="Browse...", command=self.browse_export_directory, width=10).pack(side=tk.LEFT)
+        
+        # Filename row
+        filename_row = ttk.Frame(export_frame)
+        filename_row.pack(fill=tk.X, pady=2)
+        
+        ttk.Label(filename_row, text="Filename:", width=10).pack(side=tk.LEFT)
+        self.export_filename_var = tk.StringVar(value="bPAC_metrics_export.xlsx")
+        self.export_filename_entry = ttk.Entry(filename_row, textvariable=self.export_filename_var)
+        self.export_filename_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 5))
+        ttk.Button(filename_row, text="Export to Excel", command=self.export_to_excel, width=15).pack(side=tk.LEFT)
+        
         # Create matplotlib figure
         self.fig = Figure(figsize=(8, 6), dpi=100)
         self.canvas = FigureCanvasTkAgg(self.fig, self.right_frame)
@@ -177,6 +201,9 @@ class bPACMetricsEvaluator:
                     else:
                         self.df[col] = 0  # Initialize other checkboxes as empty
             
+            # Always reset Export column to 0 on load (fresh state each session)
+            self.df['Export'] = 0
+            
             # Reorder columns to put ex-type between dir and Celltype
             self.reorder_columns()
             
@@ -207,6 +234,9 @@ class bPACMetricsEvaluator:
                 self.on_row_select(None)
             
             self.show_message("Data loaded successfully. Select a row to view its figure.")
+            
+            # Set default export directory to the pickle file's directory
+            self.export_dir_var.set(os.path.dirname(file_path))
             
         except Exception as e:
             messagebox.showerror("Error Loading File", f"Failed to load file:\n{str(e)}")
@@ -616,6 +646,73 @@ class bPACMetricsEvaluator:
         
         # Select all text for easy editing
         text_widget.tag_add("sel", "1.0", "end")
+    
+    def browse_export_directory(self):
+        """Open directory browser for export location."""
+        current_dir = self.export_dir_var.get()
+        if not current_dir or not os.path.exists(current_dir):
+            current_dir = self.get_initial_directory()
+        
+        directory = filedialog.askdirectory(
+            title="Select Export Directory",
+            initialdir=current_dir
+        )
+        
+        if directory:
+            self.export_dir_var.set(directory)
+    
+    def export_to_excel(self):
+        """Export currently visible rows to Excel file."""
+        # Check if there's data to export
+        if self.df is None or len(self.df) == 0:
+            messagebox.showwarning("No Data", "No rows to export. Check your filters.")
+            return
+        
+        # Get export path
+        export_dir = self.export_dir_var.get()
+        export_filename = self.export_filename_var.get()
+        
+        # Validate directory
+        if not export_dir or not os.path.exists(export_dir):
+            messagebox.showerror("Invalid Directory", "Please select a valid export directory.")
+            return
+        
+        # Validate filename
+        if not export_filename:
+            messagebox.showerror("Invalid Filename", "Please enter a filename.")
+            return
+        
+        # Ensure .xlsx extension
+        if not export_filename.lower().endswith('.xlsx'):
+            export_filename += '.xlsx'
+        
+        # Full export path
+        export_path = os.path.join(export_dir, export_filename)
+        
+        try:
+            # Prepare data for export
+            export_df = self.df.copy()
+            
+            # Convert checkbox columns to readable labels
+            checkbox_labels = {0: 'Empty', 1: 'Maybe', 2: 'Good'}
+            for col in self.checkbox_columns:
+                if col in export_df.columns and col != 'Export':
+                    export_df[col] = export_df[col].map(checkbox_labels)
+            
+            # Remove the Export column from export (it's just UI state)
+            if 'Export' in export_df.columns:
+                export_df = export_df.drop(columns=['Export'])
+            
+            # Export to Excel
+            export_df.to_excel(export_path, index=False, engine='openpyxl')
+            
+            # Show success message
+            row_count = len(export_df)
+            messagebox.showinfo("Export Successful", 
+                              f"Successfully exported {row_count} rows to:\n{export_path}")
+            
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Failed to export data:\n{str(e)}")
     
     def on_row_select(self, event):
         """Handle row selection to display corresponding figure."""
