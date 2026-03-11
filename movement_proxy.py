@@ -36,6 +36,12 @@ try:
 except ImportError:
     HAS_TIFFFILE = False
 
+try:
+    from scipy.optimize import curve_fit
+    HAS_SCIPY = True
+except ImportError:
+    HAS_SCIPY = False
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -77,6 +83,59 @@ def check_fneu(chanA_path: str):
     return os.path.isfile(os.path.join(chanA_path, "Fneu.npy"))
 
 
+def fit_exponential_baseline(trace: np.ndarray,
+                              window: int = 150,
+                              percentile: float = 15.0) -> np.ndarray:
+    """
+    Estimate the slowly-declining baseline of a fluorescence-like trace by:
+      1. Sliding a window across the trace and taking the Nth percentile of
+         each window — this naturally suppresses positive spikes.
+      2. Fitting  f(t) = a · exp(−b · t) + c  to those anchor points.
+
+    Returns a baseline array of the same length as `trace`.
+    Falls back to linear interpolation of the anchor points if the
+    exponential fit fails (e.g. trace is flat / scipy not available).
+    """
+    n = len(trace)
+    t_full = np.arange(n, dtype=np.float64)
+
+    # Build percentile anchor points with 50 % overlap
+    step = max(1, window // 2)
+    t_anc, y_anc = [], []
+    for start in range(0, n - window + 1, step):
+        segment = trace[start: start + window]
+        t_anc.append(start + window // 2)
+        y_anc.append(float(np.percentile(segment, percentile)))
+
+    # Need at least the first / last window covered
+    if not t_anc or t_anc[0] > 0:
+        t_anc.insert(0, 0)
+        y_anc.insert(0, float(np.percentile(trace[:window], percentile)))
+    if t_anc[-1] < n - 1:
+        t_anc.append(n - 1)
+        y_anc.append(float(np.percentile(trace[max(0, n - window):], percentile)))
+
+    t_anc = np.array(t_anc, dtype=np.float64)
+    y_anc = np.array(y_anc, dtype=np.float64)
+
+    if HAS_SCIPY:
+        def _exp(t, a, b, c):
+            return a * np.exp(-b * t) + c
+
+        a0 = y_anc[0] - y_anc[-1]
+        b0 = 1.0 / max(n, 1)
+        c0 = y_anc[-1]
+        try:
+            popt, _ = curve_fit(_exp, t_anc, y_anc,
+                                p0=[a0, b0, c0], maxfev=10_000)
+            return _exp(t_full, *popt).astype(np.float32)
+        except Exception:
+            pass  # fall through to interpolation
+
+    # Fallback: linear interpolation of anchor points
+    return np.interp(t_full, t_anc, y_anc).astype(np.float32)
+
+
 # ---------------------------------------------------------------------------
 # Main GUI class
 # ---------------------------------------------------------------------------
@@ -104,11 +163,16 @@ class MovementProxyGUI:
         self._debounce_id: str | None = None
 
         # ── Matplotlib artist refs for fast in-place slider updates ───────
-        self._raster_vline = None
-        self._coact_vline  = None
-        self._tif_im       = None
-        self._loading_text = None
-        self._ax_coact     = None   # kept for right-click y-limit dialog
+        self._raster_vline    = None
+        self._coact_vline     = None
+        self._corrected_vline = None
+        self._tif_im          = None
+        self._loading_text    = None
+        self._ax_coact        = None   # kept for right-click y-limit dialog
+        self._ax_corrected    = None   # kept for right-click y-limit dialog
+
+        # ── Baseline fit ──────────────────────────────────────────────────
+        self._coact_baseline: np.ndarray | None = None
 
         # ── Config & GUI ──────────────────────────────────────────────────
         self.config = self._load_config()
@@ -376,12 +440,15 @@ class MovementProxyGUI:
         self._cancel_tif_load()
 
         # Invalidate old artist refs
-        self._raster_vline = None
-        self._coact_vline  = None
-        self._tif_im       = None
-        self._loading_text = None
-        self._ax_coact     = None
-        self._tif_frames   = None
+        self._raster_vline    = None
+        self._coact_vline     = None
+        self._corrected_vline = None
+        self._tif_im          = None
+        self._loading_text    = None
+        self._ax_coact        = None
+        self._ax_corrected    = None
+        self._tif_frames      = None
+        self._coact_baseline  = None
         self.slider.config(state="disabled")
         self.frame_label.config(text="– / –")
 
@@ -456,9 +523,14 @@ class MovementProxyGUI:
             denom   = np.where(row_max > row_min, row_max - row_min, 1.0)
             fneu_norm = np.clip((fneu - row_min) / denom, 0.0, 1.0)
 
-            self._fneu_norm      = fneu_norm
-            self._coactivity     = fneu_norm.mean(axis=0)
-            self._n_frames_fneu  = fneu_norm.shape[1]
+            self._fneu_norm     = fneu_norm
+            self._coactivity    = fneu_norm.mean(axis=0)
+            self._n_frames_fneu = fneu_norm.shape[1]
+
+            # Fit baseline: window ≈ 5 % of trace length, capped 50–300 frames
+            win = int(np.clip(self._n_frames_fneu * 0.05, 50, 300))
+            self._coact_baseline = fit_exponential_baseline(
+                self._coactivity, window=win, percentile=15.0)
             return True
 
         except Exception as e:
@@ -569,12 +641,12 @@ class MovementProxyGUI:
     # ── Neuropil figure rendering ──────────────────────────────────────────
 
     def _make_neuropil_gridspec(self):
-        """Return a fresh GridSpec for the neuropil figure."""
+        """Return a fresh GridSpec for the neuropil figure (3 rows × 2 cols)."""
         return GridSpec(
-            2, 2,
-            height_ratios=[4, 1],
+            3, 2,
+            height_ratios=[3, 1, 1],
             width_ratios=[1, 1],
-            hspace=0.35,
+            hspace=0.45,
             wspace=0.30,
             figure=self.fig_neuropil,
         )
@@ -592,12 +664,14 @@ class MovementProxyGUI:
         self.fig_neuropil.clear()
         gs = self._make_neuropil_gridspec()
 
-        ax_raster = self.fig_neuropil.add_subplot(gs[0, 0])
-        ax_coact  = self.fig_neuropil.add_subplot(gs[1, 0])
-        ax_right  = self.fig_neuropil.add_subplot(gs[:, 1])
+        ax_raster    = self.fig_neuropil.add_subplot(gs[0, 0])
+        ax_coact     = self.fig_neuropil.add_subplot(gs[1, 0])
+        ax_corrected = self.fig_neuropil.add_subplot(gs[2, 0])
+        ax_right     = self.fig_neuropil.add_subplot(gs[:, 1])
 
         self._draw_raster(ax_raster, initial_frame=0)
         self._draw_coactivity(ax_coact, n_frames, initial_frame=0)
+        self._draw_corrected(ax_corrected, n_frames, initial_frame=0)
 
         # Loading placeholder (text object kept for in-place updates)
         ax_right.axis("off")
@@ -622,12 +696,14 @@ class MovementProxyGUI:
         self.fig_neuropil.clear()
         gs = self._make_neuropil_gridspec()
 
-        ax_raster = self.fig_neuropil.add_subplot(gs[0, 0])
-        ax_coact  = self.fig_neuropil.add_subplot(gs[1, 0])
-        ax_tif    = self.fig_neuropil.add_subplot(gs[:, 1])
+        ax_raster    = self.fig_neuropil.add_subplot(gs[0, 0])
+        ax_coact     = self.fig_neuropil.add_subplot(gs[1, 0])
+        ax_corrected = self.fig_neuropil.add_subplot(gs[2, 0])
+        ax_tif       = self.fig_neuropil.add_subplot(gs[:, 1])
 
         self._draw_raster(ax_raster, initial_frame)
         self._draw_coactivity(ax_coact, n_frames, initial_frame)
+        self._draw_corrected(ax_corrected, n_frames, initial_frame)
 
         # TIF viewer
         self._tif_im = ax_tif.imshow(
@@ -660,12 +736,18 @@ class MovementProxyGUI:
 
     def _draw_coactivity(self, ax, n_frames: int, initial_frame: int,
                          ylim: tuple | None = None):
-        """Render the co-activity trace and store the axes + vline refs."""
-        ax.plot(self._coactivity, color="steelblue", linewidth=0.8)
+        """Render the co-activity trace with baseline overlay; store axes + vline refs."""
+        ax.plot(self._coactivity, color="steelblue", linewidth=0.8,
+                label="Co-activity", zorder=3)
+        if self._coact_baseline is not None:
+            ax.plot(self._coact_baseline, color="tomato", linewidth=1.2,
+                    linestyle="--", alpha=0.85, label="Exp. baseline", zorder=4)
+            ax.legend(fontsize=6, loc="upper right",
+                      framealpha=0.6, handlelength=1.5)
         ax.set_xlim(0, n_frames - 1)
         ax.set_ylabel("Mean", fontsize=7)
         ax.set_xlabel("Frame", fontsize=7)
-        ax.set_title("Co-Activity  (right-click to set y-limits)", fontsize=9)
+        ax.set_title("Co-Activity  (right-click → y-limits)", fontsize=9)
         ax.tick_params(labelsize=6)
         if ylim is not None:
             ax.set_ylim(ylim)
@@ -673,25 +755,51 @@ class MovementProxyGUI:
             x=initial_frame, color="red", linewidth=1.2, zorder=5)
         self._ax_coact = ax
 
+    def _draw_corrected(self, ax, n_frames: int, initial_frame: int,
+                        ylim: tuple | None = None):
+        """Plot baseline-corrected co-activity (raw − baseline); store refs."""
+        if self._coact_baseline is not None:
+            corrected = self._coactivity - self._coact_baseline
+        else:
+            corrected = self._coactivity - self._coactivity.mean()
+
+        ax.plot(corrected, color="darkorange", linewidth=0.8, zorder=3)
+        ax.axhline(y=0.0, color="gray", linewidth=0.6,
+                   linestyle="--", alpha=0.6, zorder=2)
+        ax.set_xlim(0, n_frames - 1)
+        ax.set_ylabel("Δ Mean", fontsize=7)
+        ax.set_xlabel("Frame", fontsize=7)
+        ax.set_title("Baseline-Corrected  (right-click → y-limits)", fontsize=9)
+        ax.tick_params(labelsize=6)
+        if ylim is not None:
+            ax.set_ylim(ylim)
+        self._corrected_vline = ax.axvline(
+            x=initial_frame, color="red", linewidth=1.2, zorder=5)
+        self._ax_corrected = ax
+
     # ── Co-activity right-click y-limit dialog ────────────────────────────
 
     def _on_neuropil_click(self, event):
         """Matplotlib button-press callback — opens y-limit dialog on right-click."""
         if event.button != 3:
             return
-        if self._ax_coact is None or event.inaxes is not self._ax_coact:
+        if event.inaxes is None:
             return
-        self._show_ylim_dialog()
+        if event.inaxes is self._ax_coact:
+            self._show_ylim_dialog(self._ax_coact, "Co-Activity Y-limits")
+        elif event.inaxes is self._ax_corrected:
+            self._show_ylim_dialog(self._ax_corrected,
+                                   "Baseline-Corrected Y-limits")
 
-    def _show_ylim_dialog(self):
-        """Small popup to set y-axis limits on the co-activity plot."""
-        if self._ax_coact is None:
+    def _show_ylim_dialog(self, target_ax, title: str = "Y-limits"):
+        """Small popup to set y-axis limits on the given axes."""
+        if target_ax is None:
             return
 
-        current_ymin, current_ymax = self._ax_coact.get_ylim()
+        current_ymin, current_ymax = target_ax.get_ylim()
 
         dialog = tk.Toplevel(self.root)
-        dialog.title("Co-Activity Y-limits")
+        dialog.title(title)
         dialog.geometry("260x160")
         dialog.resizable(False, False)
         dialog.transient(self.root)
@@ -732,14 +840,18 @@ class MovementProxyGUI:
                                      "Y-min must be less than Y-max.",
                                      parent=dialog)
                 return
-            self._ax_coact.set_ylim(ymin, ymax)
+            target_ax.set_ylim(ymin, ymax)
             self.canvas_neuropil.draw_idle()
             dialog.destroy()
 
         def on_reset():
-            if self._coactivity is not None:
-                data_min = float(self._coactivity.min())
-                data_max = float(self._coactivity.max())
+            # Derive reset range from the data shown in this specific axes
+            ydata_all = []
+            for line in target_ax.lines:
+                ydata_all.extend(line.get_ydata())
+            if ydata_all:
+                data_min = float(np.nanmin(ydata_all))
+                data_max = float(np.nanmax(ydata_all))
                 margin   = (data_max - data_min) * 0.05
                 entry_ymin.delete(0, tk.END)
                 entry_ymin.insert(0, f"{data_min - margin:.6g}")
@@ -776,6 +888,8 @@ class MovementProxyGUI:
 
         self._raster_vline.set_xdata([frame_idx, frame_idx])
         self._coact_vline.set_xdata([frame_idx, frame_idx])
+        if self._corrected_vline is not None:
+            self._corrected_vline.set_xdata([frame_idx, frame_idx])
         self._tif_im.set_data(self._tif_frames[frame_idx])
         self.frame_label.config(text=f"{frame_idx} / {n - 1}")
         self.canvas_neuropil.draw_idle()
