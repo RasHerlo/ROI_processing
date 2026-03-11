@@ -18,14 +18,27 @@ This document tracks ongoing tasks, to-do items, and project progress.
 - 🔴 Set up testing framework
 
 ## Core Functionality
-- 🔴 Create ROI data loading module
-- 🔴 Implement basic ROI filtering methods
-- 🔴 Develop trace processing utilities
-- 🔴 Add visualization tools
+- 🟢 Create ROI data loading module (`pickle_file_expansion.py`)
+- 🟢 Implement basic ROI filtering methods
+- 🟢 Develop trace processing utilities (normalization, z-scoring, bPAC_dFF)
+- 🟢 Add visualization tools (rasterplots, ROI maps, trace overlays)
+- 🟢 Batch processing capabilities (`batch_process_traces.py`)
+- 🟢 bPAC evaluation and statistical analysis (`bPAC_dFF_eval_quick.py`)
+- 🟢 Metrics collection and aggregation
+
+## GUI Development
+- 🟢 Main application window with channel selection
+- 🟢 Trace Inspection module with ROI visualization
+- 🟢 Trace Selection module for manual filtering
+- 🟢 DataFrame Inspection module
+- 🟢 bPAC Metrics Evaluator GUI (`bPAC_metrics_collect_eval.py`)
+- 🟢 Quality control checkboxes and filters
+- 🟢 Comments and experiment type annotations
 
 ## Documentation
+- 🟢 Write comprehensive README with pipeline overview
+- 🟢 Add usage examples and CLI documentation
 - 🔴 Write API documentation
-- 🔴 Create usage examples
 - 🔴 Add docstrings to all functions
 
 ## Testing
@@ -33,9 +46,10 @@ This document tracks ongoing tasks, to-do items, and project progress.
 - 🔴 Set up continuous integration
 
 ## Future Enhancements
-- 🔴 GUI for ROI selection and filtering
-- 🔴 Batch processing capabilities
+- 🔴 Support for additional trace lengths
+- 🔴 Export functionality (CSV, Excel)
 - 🔴 Integration with other imaging analysis tools
+- 🔴 Automated quality control scoring
 
 ---
 
@@ -52,4 +66,4 @@ Example:
 ```
 ## Documentation
 - 🔴 Update installation instructions
-``` 
+```
