@@ -58,6 +58,22 @@ DISPLAY_COLUMNS  = [
 SLIDER_DEBOUNCE_MS = 200
 PROXY_FILENAME     = "Mov_Proxy"
 
+# Stimulation (LED/bPAC) artifact windows per supported trace length.
+# Each entry is (stim_start, stim_end_exclusive), matching pickle_file_expansion.py.
+# The NaN-masked frames are stim_start … stim_end_exclusive - 1 (7 frames each).
+STIM_RANGES: dict[int, tuple[int, int]] = {
+    1520: (726,  733),   # frames 726–732
+    2890: (1381, 1388),  # frames 1381–1387
+}
+
+# AP trigger timepoints (frame indices) for LED+APs experiments only.
+# Two datasets are kept here; flip AP_ACTIVE_SET to switch between them.
+AP_TIMEPOINTS: dict[str, list[int]] = {
+    "APs_calculated": [757,  913, 1070, 1226, 1383, 1539, 1696, 1852],
+    "APs_inspected":  [566,  726,  884, 1046, 1389, 1542, 1704, 1870],
+}
+AP_ACTIVE_SET = "APs_inspected"
+
 
 # ---------------------------------------------------------------------------
 # Pure path-helper functions
@@ -85,6 +101,15 @@ def check_fneu(chanA_path: str):
     if not os.path.isdir(chanA_path):
         return None
     return os.path.isfile(os.path.join(chanA_path, "Fneu.npy"))
+
+
+# ---------------------------------------------------------------------------
+# Stimulation timing helpers
+# ---------------------------------------------------------------------------
+
+def get_stim_range(n_frames: int) -> tuple[int, int] | None:
+    """Return (stim_start, stim_end_exclusive) for known trace lengths, else None."""
+    return STIM_RANGES.get(n_frames)
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +231,7 @@ class MovementProxyGUI:
         self._n_frames_fneu:  int | None = None
         self._tif_frames:     np.ndarray | None = None  # (n_frames, h, w) uint8
         self._current_row_dir: str | None = None
+        self._current_ex_type: str = ""
         self._current_thr:    float = 0.0
 
         # ── Threading / debounce ──────────────────────────────────────────
@@ -720,7 +746,8 @@ class MovementProxyGUI:
         self._tif_frames      = None
         self._coact_baseline  = None
         self._corrected_data  = None
-        self._current_row_dir = dir_path
+        self._current_row_dir  = dir_path
+        self._current_ex_type  = str(row.get("ex-type", ""))
 
         self.slider.config(state="disabled")
         self.frame_label.config(text="– / –")
@@ -982,6 +1009,10 @@ class MovementProxyGUI:
         ax.tick_params(labelsize=6)
         if ylim is not None:
             ax.set_ylim(ylim)
+        stim = get_stim_range(n_frames)
+        if stim is not None:
+            ax.axvspan(stim[0], stim[1], color="cyan", alpha=0.25, zorder=2)
+
         self._coact_vline = ax.axvline(x=initial_frame, color="red",
                                        linewidth=1.2, zorder=5)
         self._ax_coact = ax
@@ -1005,6 +1036,19 @@ class MovementProxyGUI:
         ax.tick_params(labelsize=6)
         if ylim is not None:
             ax.set_ylim(ylim)
+
+        stim = get_stim_range(n_frames)
+        if stim is not None:
+            ax.axvspan(stim[0], stim[1], color="cyan", alpha=0.25, zorder=2)
+
+        if self._current_ex_type == "LED+APs":
+            ap_frames = AP_TIMEPOINTS[AP_ACTIVE_SET]
+            ap_label  = f"APs ({AP_ACTIVE_SET.replace('APs_', '')})"
+            for i, frame in enumerate(ap_frames):
+                if 0 <= frame < n_frames:
+                    ax.axvline(x=frame, color="black", linewidth=2.0,
+                               alpha=0.85, zorder=4,
+                               label=ap_label if i == 0 else "_nolegend_")
 
         self._threshold_hline = ax.axhline(
             y=threshold, color="purple", linewidth=1.2,
