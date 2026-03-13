@@ -53,7 +53,7 @@ BPAC_POS_VALUES  = [1, 2]
 CHECKBOX_SYMBOLS = {True: "☑", False: "☐"}
 DISPLAY_COLUMNS  = [
     "AC dir", "ex-type", "bPAC pos",
-    "s2p ChanA", "Fneu", "Fneu Thr", "Fneu Bin",
+    "s2p ChanA", "Fneu", "Fneu Thr", "Fneu Bin", "Fneu Corr",
 ]
 SLIDER_DEBOUNCE_MS = 200
 PROXY_FILENAME     = "Mov_Proxy"
@@ -162,16 +162,17 @@ def compute_proxy_for_row(chanA_path: str,
                            thr: float = 0.0) -> tuple:
     """
     Load Fneu.npy, normalise, compute baseline-corrected co-activity,
-    apply threshold.  Returns (fneu_thr, fneu_bin) or (None, None).
-    fneu_bin is int8 array: 1 where corrected >= thr, else 0.
+    apply threshold.  Returns (fneu_thr, fneu_bin, fneu_corr) or (None, None, None).
+    fneu_bin  – int8 array: 1 where corrected >= thr, else 0.
+    fneu_corr – float32 array of the baseline-corrected co-activity trace.
     """
     fneu_path = os.path.join(chanA_path, "Fneu.npy")
     if not os.path.isfile(fneu_path):
-        return None, None
+        return None, None, None
     try:
         fneu = np.load(fneu_path).astype(np.float32)
         if fneu.ndim != 2:
-            return None, None
+            return None, None, None
 
         row_min   = fneu.min(axis=1, keepdims=True)
         row_max   = fneu.max(axis=1, keepdims=True)
@@ -184,9 +185,9 @@ def compute_proxy_for_row(chanA_path: str,
         corrected  = coactivity - baseline
 
         fneu_bin = (corrected >= thr).astype(np.int8)
-        return float(thr), fneu_bin
+        return float(thr), fneu_bin, corrected
     except Exception:
-        return None, None
+        return None, None, None
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +202,12 @@ def _fmt_bin(binary_vec) -> str:
     if binary_vec is None:
         return "–"
     return f"{100.0 * binary_vec.mean():.1f} %"
+
+
+def _fmt_corr(corr) -> str:
+    if corr is None:
+        return "–"
+    return f"{len(corr)} pts"
 
 
 # ---------------------------------------------------------------------------
@@ -233,6 +240,14 @@ class MovementProxyGUI:
         self._current_row_dir: str | None = None
         self._current_ex_type: str = ""
         self._current_thr:    float = 0.0
+
+        # ── Persistent y-limit cache (survives row changes) ───────────────
+        # None = auto-scale; set to a tuple to lock limits across rows.
+        self._ylim_coact:     tuple | None = None
+        self._ylim_corrected: tuple | None = None
+
+        # ── AP-trigger set selection (survives row changes) ───────────────
+        self._ap_active_set = tk.StringVar(master=self.root, value=AP_ACTIVE_SET)
 
         # ── Threading / debounce ──────────────────────────────────────────
         self._tif_load_cancel = threading.Event()
@@ -336,6 +351,19 @@ class MovementProxyGUI:
         self.canvas_neuropil.get_tk_widget().pack(fill=tk.BOTH, expand=True)
         self.canvas_neuropil.mpl_connect(
             "button_press_event", self._on_neuropil_click)
+
+        ap_frame = ttk.Frame(self.neuropil_frame)
+        ap_frame.pack(fill=tk.X, padx=8, pady=(2, 0))
+        ttk.Label(ap_frame, text="AP triggers:", font=("Arial", 8)).pack(
+            side=tk.LEFT, padx=(0, 6))
+        for key in AP_TIMEPOINTS:
+            ttk.Radiobutton(
+                ap_frame,
+                text=key.replace("APs_", "").capitalize(),
+                variable=self._ap_active_set,
+                value=key,
+                command=self._on_ap_toggle,
+            ).pack(side=tk.LEFT, padx=4)
 
         slider_frame = ttk.Frame(self.neuropil_frame)
         slider_frame.pack(fill=tk.X, padx=8, pady=(2, 4))
@@ -468,6 +496,11 @@ class MovementProxyGUI:
             self.root.quit()
             return
 
+        # Migrate older proxy files that pre-date the fneu_corr column.
+        # The column is initialised to None; values are filled as rows are visited.
+        if "fneu_corr" not in self._proxy_df.columns:
+            self._proxy_df["fneu_corr"] = None
+
         self._ensure_proxy_coverage(filtered)
         self._finalize_display(filtered)
 
@@ -555,10 +588,11 @@ class MovementProxyGUI:
 
             dir_path = str(row["dir"])
             chanA    = derive_chanA_path(dir_path)
-            fneu_thr, fneu_bin = compute_proxy_for_row(chanA, thr=0.0)
+            fneu_thr, fneu_bin, fneu_corr = compute_proxy_for_row(chanA, thr=0.0)
             rows.append({"dir": dir_path,
                          "fneu_thr": fneu_thr,
-                         "fneu_bin": fneu_bin})
+                         "fneu_bin": fneu_bin,
+                         "fneu_corr": fneu_corr})
 
         prog_win.destroy()
         return pd.DataFrame(rows)
@@ -571,24 +605,27 @@ class MovementProxyGUI:
             dir_path = str(row["dir"])
             if dir_path not in existing:
                 chanA = derive_chanA_path(dir_path)
-                fneu_thr, fneu_bin = compute_proxy_for_row(chanA, thr=0.0)
+                fneu_thr, fneu_bin, fneu_corr = compute_proxy_for_row(chanA, thr=0.0)
                 new_rows.append({"dir": dir_path,
                                  "fneu_thr": fneu_thr,
-                                 "fneu_bin": fneu_bin})
+                                 "fneu_bin": fneu_bin,
+                                 "fneu_corr": fneu_corr})
         if new_rows:
             self._proxy_df = pd.concat(
                 [self._proxy_df, pd.DataFrame(new_rows)],
                 ignore_index=True)
 
     def _proxy_for_dir(self, dir_path: str) -> tuple:
-        """Return (fneu_thr, fneu_bin) from proxy_df, or (None, None)."""
+        """Return (fneu_thr, fneu_bin, fneu_corr) from proxy_df, or (None, None, None).
+        fneu_corr may be None for proxy files created before this column was added."""
         if self._proxy_df is None:
-            return None, None
+            return None, None, None
         mask = self._proxy_df["dir"] == dir_path
         if not mask.any():
-            return None, None
+            return None, None, None
         row = self._proxy_df[mask].iloc[0]
-        return row["fneu_thr"], row["fneu_bin"]
+        fneu_corr = row["fneu_corr"] if "fneu_corr" in self._proxy_df.columns else None
+        return row["fneu_thr"], row["fneu_bin"], fneu_corr
 
     def _save_proxy(self):
         if self._proxy_df is not None and self._proxy_path:
@@ -601,8 +638,11 @@ class MovementProxyGUI:
 
     def _finalize_display(self, filtered: pd.DataFrame):
         """Build display dataframe, configure treeview, select first row."""
+        has_corr = (self._proxy_df is not None and
+                    "fneu_corr" in self._proxy_df.columns)
         proxy_lookup = {
-            row["dir"]: (row["fneu_thr"], row["fneu_bin"])
+            row["dir"]: (row["fneu_thr"], row["fneu_bin"],
+                         row["fneu_corr"] if has_corr else None)
             for _, row in self._proxy_df.iterrows()
         } if self._proxy_df is not None else {}
 
@@ -626,7 +666,8 @@ class MovementProxyGUI:
             folder_ok = os.path.isdir(chanA)
             fneu_st   = check_fneu(chanA)
 
-            fneu_thr, fneu_bin = proxy_lookup.get(dir_path, (None, None))
+            fneu_thr, fneu_bin, fneu_corr = proxy_lookup.get(
+                dir_path, (None, None, None))
 
             rows.append({
                 "AC dir":    dir_path,
@@ -637,6 +678,7 @@ class MovementProxyGUI:
                               CHECKBOX_SYMBOLS[False] if fneu_st is False else "—"),
                 "Fneu Thr":  _fmt_thr(fneu_thr),
                 "Fneu Bin":  _fmt_bin(fneu_bin),
+                "Fneu Corr": _fmt_corr(fneu_corr),
                 "_dir_raw":   dir_path,
                 "_chanA_raw": chanA,
                 "_fneu_raw":  fneu_st,
@@ -654,7 +696,7 @@ class MovementProxyGUI:
         col_widths = {
             "AC dir": 255, "ex-type": 88, "bPAC pos": 58,
             "s2p ChanA": 255, "Fneu": 44,
-            "Fneu Thr": 72, "Fneu Bin": 72,
+            "Fneu Thr": 72, "Fneu Bin": 72, "Fneu Corr": 72,
         }
         for col in DISPLAY_COLUMNS:
             self.tree.heading(col, text=col, anchor="center")
@@ -671,21 +713,24 @@ class MovementProxyGUI:
                              tags=(str(idx),))
 
     def _update_treeview_row(self, dir_path: str):
-        """Refresh Fneu Thr and Fneu Bin cells for the row matching dir_path."""
-        fneu_thr, fneu_bin = self._proxy_for_dir(dir_path)
-        thr_str = _fmt_thr(fneu_thr)
-        bin_str = _fmt_bin(fneu_bin)
+        """Refresh Fneu Thr, Fneu Bin and Fneu Corr cells for the row matching dir_path."""
+        fneu_thr, fneu_bin, fneu_corr = self._proxy_for_dir(dir_path)
+        thr_str  = _fmt_thr(fneu_thr)
+        bin_str  = _fmt_bin(fneu_bin)
+        corr_str = _fmt_corr(fneu_corr)
 
         df_mask = self.display_df["_dir_raw"] == dir_path
         if not df_mask.any():
             return
         idx = self.display_df[df_mask].index[0]
 
-        self.display_df.loc[df_mask, "Fneu Thr"] = thr_str
-        self.display_df.loc[df_mask, "Fneu Bin"] = bin_str
+        self.display_df.loc[df_mask, "Fneu Thr"]  = thr_str
+        self.display_df.loc[df_mask, "Fneu Bin"]  = bin_str
+        self.display_df.loc[df_mask, "Fneu Corr"] = corr_str
         src_mask = self.source_df["_dir_raw"] == dir_path
-        self.source_df.loc[src_mask, "Fneu Thr"] = thr_str
-        self.source_df.loc[src_mask, "Fneu Bin"] = bin_str
+        self.source_df.loc[src_mask, "Fneu Thr"]  = thr_str
+        self.source_df.loc[src_mask, "Fneu Bin"]  = bin_str
+        self.source_df.loc[src_mask, "Fneu Corr"] = corr_str
 
         iid = str(idx)
         if self.tree.exists(iid):
@@ -753,7 +798,7 @@ class MovementProxyGUI:
         self.frame_label.config(text="– / –")
 
         # Load saved threshold for this row
-        fneu_thr, _ = self._proxy_for_dir(dir_path)
+        fneu_thr, _, _ = self._proxy_for_dir(dir_path)
         self._current_thr = float(fneu_thr) if fneu_thr is not None else 0.0
 
         # 1. Astrocytes panel (synchronous)
@@ -830,6 +875,19 @@ class MovementProxyGUI:
             self._coact_baseline = fit_exponential_baseline(
                 self._coactivity, window=win, percentile=15.0)
             self._corrected_data = (self._coactivity - self._coact_baseline)
+
+            # Back-fill fneu_corr for proxy files that pre-date this column.
+            if (self._proxy_df is not None and
+                    self._current_row_dir is not None and
+                    "fneu_corr" in self._proxy_df.columns):
+                mask = self._proxy_df["dir"] == self._current_row_dir
+                if mask.any():
+                    idx = self._proxy_df[mask].index[0]
+                    if self._proxy_df.at[idx, "fneu_corr"] is None:
+                        self._proxy_df.at[idx, "fneu_corr"] = self._corrected_data
+                        self._save_proxy()
+                        self._update_treeview_row(self._current_row_dir)
+
             return True
         except Exception as e:
             self._neuropil_error(f"Error loading Fneu.npy:\n{e}")
@@ -943,9 +1001,11 @@ class MovementProxyGUI:
         ax_right     = self.fig_neuropil.add_subplot(gs[:, 1])
 
         self._draw_raster(ax_raster, initial_frame=0)
-        self._draw_coactivity(ax_coact, n_frames, initial_frame=0)
+        self._draw_coactivity(ax_coact, n_frames, initial_frame=0,
+                              ylim=self._ylim_coact)
         self._draw_corrected(ax_corrected, n_frames,
-                             initial_frame=0, threshold=self._current_thr)
+                             initial_frame=0, threshold=self._current_thr,
+                             ylim=self._ylim_corrected)
 
         ax_right.axis("off")
         self._loading_text = ax_right.text(
@@ -955,6 +1015,10 @@ class MovementProxyGUI:
 
         self.fig_neuropil.tight_layout()
         self.canvas_neuropil.draw()
+        if self._ax_coact is not None:
+            self._ylim_coact = self._ax_coact.get_ylim()
+        if self._ax_corrected is not None:
+            self._ylim_corrected = self._ax_corrected.get_ylim()
 
     def _init_neuropil_full(self, initial_frame: int = 0):
         if self._fneu_norm is None or self._tif_frames is None:
@@ -969,9 +1033,11 @@ class MovementProxyGUI:
         ax_tif       = self.fig_neuropil.add_subplot(gs[:, 1])
 
         self._draw_raster(ax_raster, initial_frame)
-        self._draw_coactivity(ax_coact, n_frames, initial_frame)
+        self._draw_coactivity(ax_coact, n_frames, initial_frame,
+                              ylim=self._ylim_coact)
         self._draw_corrected(ax_corrected, n_frames,
-                             initial_frame, threshold=self._current_thr)
+                             initial_frame, threshold=self._current_thr,
+                             ylim=self._ylim_corrected)
 
         self._tif_im = ax_tif.imshow(
             self._tif_frames[initial_frame],
@@ -982,6 +1048,10 @@ class MovementProxyGUI:
         self._loading_text = None
         self.fig_neuropil.tight_layout()
         self.canvas_neuropil.draw()
+        if self._ax_coact is not None:
+            self._ylim_coact = self._ax_coact.get_ylim()
+        if self._ax_corrected is not None:
+            self._ylim_corrected = self._ax_corrected.get_ylim()
 
     def _draw_raster(self, ax, initial_frame: int):
         ax.imshow(self._fneu_norm, aspect="auto", cmap="hot",
@@ -1042,8 +1112,9 @@ class MovementProxyGUI:
             ax.axvspan(stim[0], stim[1], color="cyan", alpha=0.25, zorder=2)
 
         if self._current_ex_type == "LED+APs":
-            ap_frames = AP_TIMEPOINTS[AP_ACTIVE_SET]
-            ap_label  = f"APs ({AP_ACTIVE_SET.replace('APs_', '')})"
+            active_set = self._ap_active_set.get()
+            ap_frames  = AP_TIMEPOINTS[active_set]
+            ap_label   = f"APs ({active_set.replace('APs_', '')})"
             for i, frame in enumerate(ap_frames):
                 if 0 <= frame < n_frames:
                     ax.axvline(x=frame, color="black", linewidth=2.0,
@@ -1060,6 +1131,25 @@ class MovementProxyGUI:
         self._corrected_vline = ax.axvline(x=initial_frame, color="red",
                                            linewidth=1.2, zorder=5)
         self._ax_corrected = ax
+
+    # ── AP toggle ─────────────────────────────────────────────────────────
+
+    def _on_ap_toggle(self):
+        """Called when the user switches AP-trigger set; redraws corrected plot."""
+        self._redraw_corrected()
+
+    def _redraw_corrected(self):
+        """Clear and redraw the corrected co-activity axes in-place."""
+        if self._ax_corrected is None or self._corrected_data is None:
+            return
+        n_frames = self._n_frames_fneu or 0
+        current_frame = (int(float(self.slider.get()))
+                         if self._tif_frames is not None else 0)
+        self._ax_corrected.cla()
+        self._draw_corrected(self._ax_corrected, n_frames, current_frame,
+                             threshold=self._current_thr,
+                             ylim=self._ylim_corrected)
+        self.canvas_neuropil.draw_idle()
 
     # ── Threshold application ─────────────────────────────────────────────
 
@@ -1081,7 +1171,8 @@ class MovementProxyGUI:
             else:
                 new_row = pd.DataFrame([{"dir": self._current_row_dir,
                                           "fneu_thr": float(new_thr),
-                                          "fneu_bin": fneu_bin}])
+                                          "fneu_bin": fneu_bin,
+                                          "fneu_corr": self._corrected_data}])
                 self._proxy_df = pd.concat([self._proxy_df, new_row],
                                            ignore_index=True)
 
@@ -1176,11 +1267,13 @@ class MovementProxyGUI:
                                      parent=dialog)
                 return
             target_ax.set_ylim(ymin, ymax)
+            self._ylim_coact = (ymin, ymax)
             self.canvas_neuropil.draw_idle()
             dialog.destroy()
 
         def on_reset():
-            ydata = [v for line in target_ax.lines for v in line.get_ydata()]
+            ydata = [v for line in target_ax.lines for v in line.get_ydata()
+                     if not isinstance(v, str)]
             if ydata:
                 lo, hi = float(np.nanmin(ydata)), float(np.nanmax(ydata))
                 m = (hi - lo) * 0.05
@@ -1203,7 +1296,7 @@ class MovementProxyGUI:
             return
 
         cur_ymin, cur_ymax = self._ax_corrected.get_ylim()
-        saved_thr, _ = self._proxy_for_dir(self._current_row_dir or "")
+        saved_thr, _, _ = self._proxy_for_dir(self._current_row_dir or "")
         saved_thr    = float(saved_thr) if saved_thr is not None else 0.0
 
         dialog = tk.Toplevel(self.root)
@@ -1255,6 +1348,7 @@ class MovementProxyGUI:
                                      "Y-min must be less than Y-max.", parent=dialog)
                 return
             self._ax_corrected.set_ylim(ymin, ymax)
+            self._ylim_corrected = (ymin, ymax)
             self._apply_threshold(thr)
             dialog.destroy()
 
