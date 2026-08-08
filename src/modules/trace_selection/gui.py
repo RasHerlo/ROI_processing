@@ -119,7 +119,8 @@ class TraceSelectionGUI(QWidget):
             
             # Manual Selection column (checkbox)
             checkbox = QCheckBox()
-            checkbox.setChecked(df.iloc[row]['manual_selection'])
+            # Cast numpy.bool_ to Python bool for PyQt setChecked()
+            checkbox.setChecked(bool(df.iloc[row]['manual_selection']))
             checkbox.stateChanged.connect(lambda state, r=row: self.on_checkbox_changed(r, state))
             
             # Center the checkbox in the cell
